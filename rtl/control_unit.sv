@@ -2,7 +2,6 @@
 
 module control_unit (
     input  logic [6:0] opcode,
-    input  logic [3:0] alu_op,
     output logic       reg_write,
     output logic       mem_read,
     output logic       mem_write,
@@ -79,13 +78,15 @@ module control_unit (
                 uses_rs2    = 1'b0;
             end    
             7'b0000011: begin
-                uses_rs1    = 1'b1;
+                reg_write   = 1'b1;
+                mem_read    = 1'b1;
                 alu_src_imm = 1'b1;
                 alu_a_sel   = ALU_A_RS1;
-                alu_mode    = ALU_MODE_OP;
+                alu_mode    = ALU_MODE_ADD;
                 imm_sel     = IMM_I;
-                wb_sel      = WB_ALU;
-                
+                wb_sel      = WB_MEM;
+                uses_rs1    = 1'b1;
+                uses_rs2    = 1'b0;
             end
             7'b0100011: begin
                 mem_write   = 1'b1;
