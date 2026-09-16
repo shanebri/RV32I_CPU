@@ -3,6 +3,8 @@
 module tb_dmem;
 
     logic        clk;
+    logic        rst;
+    logic [31:0] gpio_out;
     logic        mem_read;
     logic        mem_write;
     logic [31:0] addr;
@@ -11,8 +13,10 @@ module tb_dmem;
 
     integer errors;
 
-    dmem_mmio #(.WORDS(64)) dut (
+    dmem_mmio dut (
         .clk       (clk),
+        .rst       (rst),
+        .gpio_out  (gpio_out),
         .mem_read  (mem_read),
         .mem_write (mem_write),
         .addr      (addr),
@@ -57,10 +61,15 @@ module tb_dmem;
 
     initial begin
         errors    = 0;
+        rst       = 1'b1;
         mem_read  = 1'b0;
         mem_write = 1'b0;
         addr      = 32'd0;
         wdata     = 32'd0;
+
+        @(negedge clk);
+        if (gpio_out !== 32'd0) $fatal(1, "GPIO reset failed");
+        rst = 1'b0;
 
         write_word(32'h00000000, 32'h11223344);
         write_word(32'h00000004, 32'hA5A5A5A5);
@@ -72,6 +81,14 @@ module tb_dmem;
 
         write_word(32'h00000004, 32'h12345678);
         check_read(32'h00000004, 32'h12345678);
+
+        write_word(32'h10000000, 32'd10);
+        check_read(32'h10000000, 32'd10);
+        check_read(32'h00000000, 32'h11223344);
+        if (gpio_out !== 32'd10) $fatal(1, "GPIO output failed");
+        rst = 1'b1;
+        @(negedge clk);
+        if (gpio_out !== 32'd0) $fatal(1, "GPIO reset after write failed");
 
         if (errors == 0)
             $display("ALL DMEM TESTS PASSED");

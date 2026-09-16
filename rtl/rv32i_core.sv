@@ -1,8 +1,9 @@
 `timescale 1ns / 1ps
 
 module rv32i_core(
-    input  logic clk,
-    input  logic rst
+    input   logic        clk,
+    input   logic        rst,
+    output  logic [31:0] gpio_out
     );
 
     // Hazard control
@@ -446,11 +447,13 @@ module rv32i_core(
     
     dmem_mmio data_memory (
         .clk       (clk),
+        .rst       (rst),
         .mem_read  (mem_read_mem),
         .mem_write (mem_write_mem),
         .addr      (alu_result_mem),
         .wdata     (store_data_mem),
-        .rdata     (mem_read_data)
+        .rdata     (mem_read_data),
+        .gpio_out  (gpio_out)
     );
     
     

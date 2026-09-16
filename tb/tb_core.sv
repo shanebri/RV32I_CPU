@@ -12,7 +12,8 @@ module tb_core;
 
     rv32i_core dut (
         .clk (clk),
-        .rst (rst)
+        .rst (rst),
+        .gpio_out ()
     );
 
 

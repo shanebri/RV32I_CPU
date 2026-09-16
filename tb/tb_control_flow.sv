@@ -11,7 +11,8 @@ module tb_control_flow;
 
     rv32i_core dut (
         .clk (clk),
-        .rst (rst)
+        .rst (rst),
+        .gpio_out ()
     );
 
     initial begin
