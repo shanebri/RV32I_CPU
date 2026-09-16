@@ -10,10 +10,6 @@ module rv32i_core(
     logic        flush_ifid;
     logic        stall_pc;
 
-    assign stall_ifid = 1'b0;
-    assign flush_ifid = 1'b0;
-    assign stall_pc   = 1'b0;
-
 
     // IF stage
     logic [31:0] pc;
@@ -22,10 +18,6 @@ module rv32i_core(
     logic [31:0] instr;
 
     assign pc_plus_4 = pc + 32'd4;
-    assign pc_next   = pc_plus_4;
-
-    assign stall = 1'b0;
-    assign flush = 1'b0;
 
 
     // IF/ID pipeline register
@@ -96,13 +88,81 @@ module rv32i_core(
     logic [1:0]  wb_sel_ex;
     logic        valid_ex;
     logic        flush_idex;
+    
+    // Writeback
+    logic [31:0] wb_value;
+    
+    localparam logic [1:0]
+        WB_ALU = 2'b00,
+        WB_MEM = 2'b01,
+        WB_PC4 = 2'b10;
+    
+    // ALU Signals
+    logic [31:0] a_ex;
+    logic [31:0] b_ex;
+    logic [31:0] y_ex;
+    logic        zero_ex;
+    
+    logic [31:0] branch_target_ex;
+    logic [31:0] jalr_target_ex;
+    logic [31:0] redirect_target_ex;
+    logic        redirect_ex;
+    
+    assign branch_target_ex = pc_ex + imm_ex;
+    assign jalr_target_ex   = (rs1_forwarded_ex + imm_ex) & 32'hFFFF_FFFE;   
+    assign redirect_ex = (branch_ex && branch_taken_ex) || jump_ex;
+    assign redirect_target_ex = jalr_ex ? jalr_target_ex : branch_target_ex;
+    
+    // EX/MEM Pipeline Register
+    logic [31:0] alu_result_mem;
+    logic [31:0] store_data_mem;
+    logic [31:0] pc_plus4_mem;
+    logic [4:0]  rd_mem;  
+    logic        reg_write_mem;
+    logic        mem_read_mem;
+    logic        mem_write_mem;
+    logic [1:0]  wb_sel_mem;
+    logic        valid_mem;
+    
+    // Forwarding
+    logic [1:0]  forward_a;
+    logic [1:0]  forward_b;
+    logic [31:0] rs1_forwarded_ex;
+    logic [31:0] rs2_forwarded_ex;
+    logic [31:0] mem_forward_value;
+    
+    logic [31:0] mem_read_data;
+    
+    // MEM/WB pipeline register
+    logic [31:0] alu_result_wb;
+    logic [31:0] mem_data_wb;
+    logic [31:0] pc_plus4_wb;    
+    logic [4:0]  rd_wb;
+    logic        reg_write_wb;
+    logic [1:0]  wb_sel_wb;
+    logic        valid_wb;
 
 
-    // Program counter
+    hazard_unit u_hazard_unit (
+        .rs1_id        (rs1_id),
+        .rs2_id        (rs2_id),
+        .uses_rs1_id   (uses_rs1_id),
+        .uses_rs2_id   (uses_rs2_id),
+        .rd_ex         (rd_ex),
+        .mem_read_ex   (mem_read_ex && valid_ex),
+        .redirect_ex   (redirect_ex),
+        .stall_ifid    (stall_ifid),
+        .stall_pc      (stall_pc),
+        .flush_idex    (flush_idex),
+        .flush_ifid    (flush_ifid)
+    );
+    
+    assign pc_next = redirect_ex ? redirect_target_ex : pc_plus_4;
+
     always_ff @(posedge clk) begin
         if (rst)
             pc <= 32'd0;
-        else
+        else if (redirect_ex || !stall_pc)
             pc <= pc_next;
     end
 
@@ -167,9 +227,9 @@ module rv32i_core(
     // Register file
     regfile register_file (
         .clk (clk),
-        .we  (wb_reg_write),
-        .rd  (wb_rd),
-        .wd  (wb_value),
+        .we  (reg_write_wb && valid_wb),
+        .rd  (rd_wb),
+        .wd  (wb_value),   
         .rs1 (rs1_id),
         .rs2 (rs2_id),
         .rd1 (rs1_val_id),
@@ -282,5 +342,152 @@ module rv32i_core(
             valid_ex       <= valid_id;
         end
     end
+    
+    alu u_alu (
+        .a      (a_ex),
+        .b      (b_ex),
+        .alu_op (alu_op_ex),
+        .y      (y_ex),
+        .zero   (zero_ex)
+    );
+    
+    always_comb begin
+        unique case (alu_a_sel_ex)
+            2'b00: a_ex = rs1_forwarded_ex;
+            2'b01: a_ex = pc_ex;
+            2'b10: a_ex = 32'd0;
+            default: a_ex = 32'd0;
+        endcase
+    end
+    
+    assign b_ex = alu_src_imm_ex ? imm_ex : rs2_forwarded_ex;
+    
+    logic branch_taken_ex;
+    
+    always_comb begin
+        branch_taken_ex = 1'b0;
+    
+        if (branch_ex) begin
+            unique case (funct3_ex)
+                3'b000: branch_taken_ex = (rs1_forwarded_ex == rs2_forwarded_ex);
+                3'b001: branch_taken_ex = (rs1_forwarded_ex != rs2_forwarded_ex);
+                3'b100: branch_taken_ex = ($signed(rs1_forwarded_ex) <  $signed(rs2_forwarded_ex));
+                3'b101: branch_taken_ex = ($signed(rs1_forwarded_ex) >= $signed(rs2_forwarded_ex));
+                3'b110: branch_taken_ex = (rs1_forwarded_ex <  rs2_forwarded_ex);
+                3'b111: branch_taken_ex = (rs1_forwarded_ex >= rs2_forwarded_ex);
+                default: branch_taken_ex = 1'b0;
+            endcase
+        end
+    end
+    
+    forwarding_unit u_forwarding_unit (
+        .rs1_ex        (rs1_ex),
+        .rs2_ex        (rs2_ex),  
+        .rd_mem        (rd_mem),
+        .reg_write_mem (reg_write_mem && valid_mem),  
+        .rd_wb         (rd_wb),
+        .reg_write_wb  (reg_write_wb && valid_wb), 
+        .forward_a     (forward_a),
+        .forward_b     (forward_b)
+    );
+    
+    
+    always_comb begin
+        unique case (wb_sel_mem)
+            WB_ALU:  mem_forward_value = alu_result_mem;
+            WB_PC4:  mem_forward_value = pc_plus4_mem;
+            default: mem_forward_value = alu_result_mem;
+        endcase
+    end
+    
+    always_comb begin
+        unique case (forward_a)
+            2'b00:   rs1_forwarded_ex = rs1_val_ex;
+            2'b01:   rs1_forwarded_ex = mem_forward_value;
+            2'b10:   rs1_forwarded_ex = wb_value;
+            default: rs1_forwarded_ex = rs1_val_ex;
+        endcase
+    
+        unique case (forward_b)
+            2'b00:   rs2_forwarded_ex = rs2_val_ex;
+            2'b01:   rs2_forwarded_ex = mem_forward_value;
+            2'b10:   rs2_forwarded_ex = wb_value;
+            default: rs2_forwarded_ex = rs2_val_ex;
+        endcase
+    end
+    
+    // EX/MEM Pipeline Register
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            alu_result_mem <= 32'd0;
+            store_data_mem <= 32'd0;
+            pc_plus4_mem   <= 32'd0;
+            rd_mem         <= 5'd0;
+    
+            reg_write_mem  <= 1'b0;
+            mem_read_mem   <= 1'b0;
+            mem_write_mem  <= 1'b0;
+            wb_sel_mem     <= 2'b00;
+            valid_mem      <= 1'b0;
+        end
+        else begin
+            alu_result_mem <= y_ex;
+            store_data_mem <= rs2_forwarded_ex;
+            pc_plus4_mem   <= pc_plus4_ex;
+            rd_mem         <= rd_ex;
+    
+            reg_write_mem  <= reg_write_ex;
+            mem_read_mem   <= mem_read_ex;
+            mem_write_mem  <= mem_write_ex;
+            wb_sel_mem     <= wb_sel_ex;
+            valid_mem      <= valid_ex;
+        end
+    end
+    
+    dmem_mmio data_memory (
+        .clk       (clk),
+        .mem_read  (mem_read_mem),
+        .mem_write (mem_write_mem),
+        .addr      (alu_result_mem),
+        .wdata     (store_data_mem),
+        .rdata     (mem_read_data)
+    );
+    
+    
+    // MEM/WB pipeline register
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            alu_result_wb <= 32'd0;
+            mem_data_wb   <= 32'd0;
+            pc_plus4_wb   <= 32'd0;
+    
+            rd_wb         <= 5'd0;
+            reg_write_wb  <= 1'b0;
+            wb_sel_wb     <= 2'b00;
+    
+            valid_wb      <= 1'b0;
+        end
+        else begin
+            alu_result_wb <= alu_result_mem;
+            mem_data_wb   <= mem_read_data;
+            pc_plus4_wb   <= pc_plus4_mem;
+    
+            rd_wb         <= rd_mem;
+            reg_write_wb  <= reg_write_mem;
+            wb_sel_wb     <= wb_sel_mem;
+    
+            valid_wb      <= valid_mem;
+        end
+    end
+    
+    always_comb begin
+        unique case (wb_sel_wb)
+            WB_ALU:  wb_value = alu_result_wb;
+            WB_MEM:  wb_value = mem_data_wb;
+            WB_PC4:  wb_value = pc_plus4_wb;
+            default: wb_value = 32'd0;
+        endcase
+    end
+        
 
 endmodule
